@@ -1,0 +1,181 @@
+1. UART Receiver (uart_rx.v)
+verilog
+module UART_RX (
+    input clk,
+    input rst,
+    input rx,
+    output reg [7:0] data_out,
+    output reg data_valid
+);
+    parameter BAUD_DIV = 5208; // 50MHz / 9600
+    reg [12:0] baud_cnt;
+    reg [3:0] bit_idx;
+    reg [9:0] rx_shift;
+    reg busy;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            busy <= 0; baud_cnt <= 0; bit_idx <= 0; data_valid <= 0;
+        end else begin
+            data_valid <= 0;
+            if (!busy) begin
+                if (!rx) begin
+                    busy <= 1; baud_cnt <= BAUD_DIV/2; bit_idx <= 0;
+                end
+            end else begin
+                if (baud_cnt == 0) begin
+                    rx_shift[bit_idx] <= rx;
+                    baud_cnt <= BAUD_DIV;
+                    bit_idx <= bit_idx + 1;
+                    if (bit_idx == 9) begin
+                        busy <= 0;
+                        data_out <= rx_shift[8:1];
+                        data_valid <= 1;
+                    end
+                end else baud_cnt <= baud_cnt - 1;
+            end
+        end
+    end
+endmodule
+
+
+2. 7-Segment Decoder (seg7_decoder.v)
+verilog
+module seg7_decoder(
+    input [3:0] bcd,
+    output reg [6:0] seg
+);
+    always @(*) begin
+        case (bcd)
+            4'd0: seg = 7'b1000000;
+            4'd1: seg = 7'b1111001;
+            4'd2: seg = 7'b0100100;
+            4'd3: seg = 7'b0110000;
+            4'd4: seg = 7'b0011001;
+            4'd5: seg = 7'b0010010;
+            4'd6: seg = 7'b0000010;
+            4'd7: seg = 7'b1111000;
+            4'd8: seg = 7'b0000000;
+            4'd9: seg = 7'b0010000;
+            4'hE: seg = 7'b0000110; // 'E'
+            default: seg = 7'b1111111;
+        endcase
+    end
+endmodule
+
+
+3. Top Level: FSM, ASCII-to-Binary, 7-Segment Multiplexer (sevenseg_controller.v)
+
+module sevenseg_controller(
+    input clk,               
+    input rst,            
+    input uart_rx,         
+    output reg [3:0] an,    
+    output reg [6:0] seg     
+);
+    wire [7:0] rx_data;
+    wire rx_ready;
+    UART_RX #(.BAUD_DIV(5208)) u_rx (
+        .clk(clk),
+        .rst(rst),
+        .rx(uart_rx),
+        .data_out(rx_data),
+        .data_valid(rx_ready)
+    );
+
+    reg [3:0] digit_reg [0:3];
+    reg [1:0] set_index;        
+    reg set_mode;           
+
+    integer idx;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            for (idx = 0; idx < 4; idx = idx + 1)
+                digit_reg[idx] <= 4'd0;
+            set_mode <= 1'b0;
+            set_index <= 2'd0;
+        end else if (rx_ready) begin
+            if (set_mode) begin
+                if (rx_data >= "0" && rx_data <= "9") begin
+                    digit_reg[set_index] <= rx_data - "0";
+                    if (set_index == 2'd3)
+                        set_mode <= 1'b0;        
+                    set_index <= set_index + 1'b1;
+                end else begin
+                    set_mode <= 1'b0;         
+                end
+            end else begin
+                case (rx_data)
+                    "S": begin
+                        set_mode <= 1'b1;
+                        set_index <= 2'd0;
+                    end
+                    "C": for (idx = 0; idx < 4; idx = idx + 1)
+                            digit_reg[idx] <= 4'd0;
+                    "E": for (idx = 0; idx < 4; idx = idx + 1)
+                            digit_reg[idx] <= 4'hE;
+                    default: ;
+                endcase
+            end
+        end
+    end
+    reg [15:0] refresh_counter = 0;
+    reg [1:0] current_digit = 0;
+    always @(posedge clk) begin
+        refresh_counter <= refresh_counter + 1'b1;
+        if (refresh_counter == 24'd12500) begin
+            refresh_counter <= 24'd0;
+            current_digit <= current_digit + 1'b1;
+        end
+    end
+
+    always @(*) begin
+        an = ~(4'b0001 << current_digit); 
+        case (digit_reg[current_digit])
+            4'd0: seg = 7'b1000000;
+            4'd1: seg = 7'b1111001;
+            4'd2: seg = 7'b0100100;
+            4'd3: seg = 7'b0110000;
+            4'd4: seg = 7'b0011001;
+            4'd5: seg = 7'b0010010;
+            4'd6: seg = 7'b0000010;
+            4'd7: seg = 7'b1111000;
+            4'd8: seg = 7'b0000000;
+            4'd9: seg = 7'b0010000;
+            4'he, 4'hE: seg = 7'b0000110; 
+            default: seg = 7'b1111111;
+        endcase
+    end
+endmodule
+
+
+4. Test Bench Code
+`timescale 1ns/1ps
+
+module tb_sevenseg_controller();
+    reg clk = 0, rst = 1, uart_rx = 1;
+    wire [3:0] an;
+    wire [6:0] seg;
+
+    sevenseg_controller uut(.clk(clk), .rst(rst), .uart_rx(uart_rx), .an(an), .seg(seg));
+    always #10 clk = ~clk;
+    parameter BIT_TIME = 104167;
+    task uart_send_byte(input [7:0] data);
+        integer i;
+        begin
+            uart_rx = 0; #(BIT_TIME);
+            for (i=0; i<8; i=i+1) begin uart_rx = data[i]; #(BIT_TIME); end
+            uart_rx = 1; #(BIT_TIME);
+        end
+    endtask
+    initial begin
+        #(200_000); rst = 0;
+        uart_send_byte("S"); uart_send_byte("1");
+        uart_send_byte("2"); uart_send_byte("3");
+        uart_send_byte("4"); #(BIT_TIME*20);
+        uart_send_byte("C"); #(BIT_TIME*20);
+        uart_send_byte("E"); #(BIT_TIME*20);
+        $stop;
+    end
+endmodule
+
