@@ -40,8 +40,28 @@ module tb_sevenseg_controller;
         #(104167 * 20);
         if (uut.digit_reg[0] !== 4'd1 || uut.digit_reg[1] !== 4'd2 ||
             uut.digit_reg[2] !== 4'd3 || uut.digit_reg[3] !== 4'd4)
-            $fatal(1, "UART digit programming failed");
-        $display("PASS: UART programmed display digits to 1234");
+            $fatal(1,"S command failed" );
+        $display("PASS: S1234 -> 1234");
+        // Test Clear command
+        uart_send_byte("C");
+        #(104167 * 5);
+
+        if (uut.digit_reg[0] !== 4'd0 || uut.digit_reg[1] !== 4'd0 ||
+            uut.digit_reg[2] !== 4'd0 || uut.digit_reg[3] !== 4'd0)
+            $fatal(1, "C command failed");
+
+        $display("PASS: C -> 0000");
+
+        // Test Error command
+        uart_send_byte("E");
+        #(104167 * 5);
+
+        if (uut.digit_reg[0] !== 4'hE || uut.digit_reg[1] !== 4'hE ||
+            uut.digit_reg[2] !== 4'hE || uut.digit_reg[3] !== 4'hE)
+            $fatal(1, "E command failed");
+        
+        $display("PASS: E -> EEEE");
+
         $finish;
     end
 endmodule
